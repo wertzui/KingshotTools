@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halloween Candy Reward Calculator</title>
+<style>
+  :root { --bg:#14101c; --card:#1f1830; --line:#3a2d57; --orange:#ff8a1f; --text:#eee8f7; --muted:#a79bc2; --bad:#ff7b7b; --good:#7bffa8; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 12px; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  main { max-width:860px; margin:0 auto; }
+  h1 { color:var(--orange); margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .inputs { display:flex; flex-wrap:wrap; gap:14px; align-items:end; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+  input { background:#120d1d; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:16px; width:170px; }
+  input:focus { outline:2px solid var(--orange); }
+  #info { margin-top:10px; color:var(--muted); font-size:13px; min-height:1.45em; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:7px 10px; text-align:right; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; font-size:13px; }
+  th.worst { color:var(--bad); } th.best { color:var(--good); } th.avg { color:var(--orange); }
+  td.avg { font-weight:700; }
+  tr.group td { text-align:left; color:var(--orange); font-weight:700; padding-top:16px; border-bottom:2px solid var(--line); }
+  details { color:var(--muted); font-size:13px; }
+  summary { cursor:pointer; color:var(--text); }
+  li { margin:3px 0; }
+  .progress { height:6px; background:#120d1d; border-radius:4px; overflow:hidden; margin-top:10px; visibility:hidden; }
+  .progress div { height:100%; width:0; background:var(--orange); }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎃 Halloween Candy Reward Calculator</h1>
+  <p class="sub">Enter your Halloween Candies to see the expected rewards. One hit costs 20 candies.</p>
+
+  <div class="card">
+    <div class="inputs">
+      <label>Halloween Candies
+        <input id="candies" type="number" min="0" step="1" value="1000">
+      </label>
+      <label>Candies in Wicked Witch's Treasure
+        <input id="treasureCandy" type="number" min="0" step="1" value="5000">
+      </label>
+      <label>Worst / Best luck percentile (%)
+        <input id="pct" type="number" min="0" max="49" step="1" value="5">
+      </label>
+    </div>
+    <div class="progress" id="bar"><div></div></div>
+    <div id="info"></div>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>Reward</th><th class="worst">Worst</th><th class="avg">Average</th><th class="best">Best</th></tr>
+      </thead>
+      <tbody id="out"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>How is this calculated?</summary>
+      <ul>
+        <li>The event is simulated many times. <b>Average</b> is the mean over all runs. <b>Worst</b> and <b>Best</b> are the low and high luck percentiles (default 5% / 95%) of each individual reward, so 90% of runs land between them.</li>
+        <li>Every attack (Pumpkin Man or Wicked Witch) costs 20 candies unless it is free through Prankster Time. 10 hits defeat one Pumpkin Man.</li>
+        <li>Defeating a Pumpkin Man: 2 Treasure Points, the defeat reward, and a 20% chance for a Wicked Witch encounter with 3-15 attacks.</li>
+        <li>Prankster Time: the chance starts at 0.2% and rises by 0.2% with every paid attack. It resets after Prankster Time triggers. 3-11 attacks are then free. Free attacks do not raise the chance.</li>
+        <li>Wicked Witch's Treasure: rolled once per encounter with 10 or more attacks. The chance is 0.6% at 10,000+ Prankster Points and 1% at 20,000+. Each attack gives 2 Prankster Points. Candies from the treasure are only listed, not spent again.</li>
+        <li>The one-time chest at 300 Prankster Points (150 attacks) gives 2 Mythic General Hero Shards, 3 Forgehammers and a 3h General Speedup.</li>
+        <li>Each unused candy (less than 20 left at the end) becomes a Lv.1 Custom Secured Resource Chest.</li>
+        <li>Speedups of different sizes (5m, 1h, 3h) are added together and shown as a time span.</li>
+      </ul>
+    </details>
+  </div>
+</main>
+
+<script>
+const HIT_COST = 20;
+const HITS_PER_PUMPKIN = 10;
+const WITCH_CHANCE = 0.2;
+const PRANKSTER_START = 0.002;
+const PRANKSTER_STEP = 0.002;
+const PRANKSTER_CHEST_POINTS = 300;
+
+// Reward indices
+const K = ['lucky','stamina','gems','xp','con','res','train','gen','govGear','charm','forge',
+           'shards','treasure','chests','tp','pp','attacks','free','pumpkins','witches','pranks'];
+const I = Object.fromEntries(K.map((k, i) => [k, i]));
+
+function table(rows) {
+  let sum = 0;
+  const cum = rows.map(r => (sum += r[0]));
+  return { cum, total: sum, rows };
+}
+// [chance %, key, amount]
+const PUMPKIN_HIT = table([[1,'lucky',1],[3,'stamina',10],[10,'gems',100],[17,'xp',5000],[23,'con',5],[23,'res',5],[23,'train',5]]);
+const PUMPKIN_KILL = table([[2,'govGear',1],[2,'charm',1],[2,'forge',1],[8,'gen',60],[86,'gems',100]]);
+const WITCH_HIT = table([[1.5,'lucky',2],[2,'govGear',1],[2,'charm',1],[2,'forge',1],[12,'gen',180],[20,'gems',1000],[60.5,'gems',100]]);
+const WITCH_ATTACKS = table([[56,3],[7,4],[6,5],[6,6],[5,7],[5,8],[5,9],[2.5,10],[2.5,11],[2,12],[1.5,13],[1,14],[0.5,15]]);
+const PRANK_FREE = table([[70,3],[7,4],[6,5],[4,6],[4,7],[3,8],[3,9],[2,10],[1,11]]);
+
+function pick(t) {
+  const r = Math.random() * t.total;
+  const c = t.cum;
+  for (let i = 0; i < c.length; i++) if (r < c[i]) return i;
+  return c.length - 1;
+}
+function give(t, tot) {
+  const row = t.rows[pick(t)];
+  tot[I[row[1]]] += row[2];
+}
+
+function runOnce(candies, tot) {
+  let c = candies, pumpHits = 0, witchLeft = 0, witchTotal = 0, free = 0, since = 0, attacks = 0;
+  for (;;) {
+    const isFree = free > 0;
+    if (isFree) { free--; tot[I.free]++; }
+    else if (c >= HIT_COST) c -= HIT_COST;
+    else break;
+    attacks++;
+
+    if (!isFree) {
+      since++;
+      if (Math.random() < since * PRANKSTER_STEP + (PRANKSTER_START - PRANKSTER_STEP)) {
+        free = PRANK_FREE.rows[pick(PRANK_FREE)][1];
+        since = 0;
+        tot[I.pranks]++;
+      }
+    }
+
+    if (witchLeft > 0) {
+      give(WITCH_HIT, tot);
+      if (--witchLeft === 0 && witchTotal >= 10) {
+        const points = attacks * 2;
+        const p = points >= 20000 ? 0.01 : points >= 10000 ? 0.006 : 0;
+        if (p && Math.random() < p) tot[I.treasure]++;
+      }
+    } else {
+      give(PUMPKIN_HIT, tot);
+      if (++pumpHits === HITS_PER_PUMPKIN) {
+        pumpHits = 0;
+        give(PUMPKIN_KILL, tot);
+        tot[I.tp] += 2;
+        tot[I.pumpkins]++;
+        if (Math.random() < WITCH_CHANCE) {
+          witchTotal = witchLeft = WITCH_ATTACKS.rows[pick(WITCH_ATTACKS)][1];
+          tot[I.witches]++;
+        }
+      }
+    }
+  }
+  if (attacks * 2 >= PRANKSTER_CHEST_POINTS) {   // one-time chest at 300 Prankster Points
+    tot[I.shards] += 2;
+    tot[I.forge] += 3;
+    tot[I.gen] += 180;
+  }
+  tot[I.attacks] = attacks;
+  tot[I.pp] = attacks * 2;
+  tot[I.chests] = c;
+}
+
+let results = null;   // { candies, runs, data: Float64Array[] per key }
+let token = 0;
+
+const $ = id => document.getElementById(id);
+
+async function calculate() {
+  const candies = Math.max(0, Math.floor(Number($('candies').value) || 0));
+  const myToken = ++token;
+  const estAttacks = Math.max(1, candies / HIT_COST * 1.15);
+  const runs = Math.round(Math.min(3000, Math.max(300, 3e7 / estAttacks)));
+  const data = K.map(() => new Float64Array(runs));
+  const tot = new Float64Array(K.length);
+
+  const bar = $('bar').firstElementChild;
+  $('bar').style.visibility = 'hidden';
+  const startedAt = performance.now();
+
+  let done = 0;
+  while (done < runs) {
+    const t0 = performance.now();
+    while (done < runs && performance.now() - t0 < 30) {
+      tot.fill(0);
+      runOnce(candies, tot);
+      for (let k = 0; k < K.length; k++) data[k][done] = tot[k];
+      done++;
+    }
+    bar.style.width = (done / runs * 100) + '%';
+    if (performance.now() - startedAt > 1000) $('bar').style.visibility = 'visible';
+    await new Promise(r => setTimeout(r));
+    if (myToken !== token) return;
+  }
+
+  results = { candies, runs, data: data.map(a => a.sort()) };
+  $('bar').style.visibility = 'hidden';
+  render();
+}
+
+// Values are sorted ascending per reward, so percentiles are direct lookups.
+function stats(arr, pct) {
+  const n = arr.length;
+  const lo = Math.floor(pct / 100 * (n - 1));
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += arr[i];
+  return { worst: arr[lo], avg: sum / n, best: arr[n - 1 - lo] };
+}
+
+function fmtNum(v) {
+  if (v === 0) return '0';
+  if (Number.isInteger(v) || v >= 100) return Math.round(v).toLocaleString();
+  return v.toLocaleString(undefined, { maximumFractionDigits: v < 10 ? 2 : 1 });
+}
+function fmtTime(min) {
+  min = Math.round(min);
+  if (min <= 0) return '0m';
+  const d = Math.floor(min / 1440), h = Math.floor(min % 1440 / 60), m = min % 60;
+  return [d && d + 'd', h && h + 'h', m && m + 'm'].filter(Boolean).join(' ');
+}
+
+// [label, key, formatter]; the table structure is built once, render() only replaces cell text.
+const LAYOUT = [
+  ['Rewards', [
+    ['Gems', 'gems', fmtNum],
+    ['Hero XP', 'xp', fmtNum],
+    ['Governor Stamina', 'stamina', fmtNum],
+    ['General Speedup', 'gen', fmtTime],
+    ['Construction Speedup', 'con', fmtTime],
+    ['Research Speedup', 'res', fmtTime],
+    ['Training Speedup', 'train', fmtTime],
+    ['Lucky Hero Gear Chest', 'lucky', fmtNum],
+    ['Governor Gear Materials Chest', 'govGear', fmtNum],
+    ['Random Governor Charm Material Chest', 'charm', fmtNum],
+    ['Forgehammer', 'forge', fmtNum],
+    ['Mythic General Hero Shard', 'shards', fmtNum],
+    ["Wicked Witch's Treasure", 'treasure', fmtNum],
+    ['Halloween Candy (from Treasure)', 'treasureCandy', fmtNum],
+    ['Lv.1 Custom Secured Resource Chest (unused candy)', 'chests', fmtNum],
+  ]],
+  ['Points', [
+    ['Treasure Points', 'tp', fmtNum],
+    ['Prankster Points', 'pp', fmtNum],
+  ]],
+  ['Event statistics', [
+    ['Total attacks', 'attacks', fmtNum],
+    ['Free attacks (Prankster Time)', 'free', fmtNum],
+    ['Prankster Time triggers', 'pranks', fmtNum],
+    ['Pumpkin Men defeated', 'pumpkins', fmtNum],
+    ['Wicked Witch encounters', 'witches', fmtNum],
+  ]],
+];
+
+const cells = [];   // { key, fmt, worst, avg, best } text-holding elements
+(function buildTable() {
+  const body = $('out');
+  for (const [title, rows] of LAYOUT) {
+    const g = body.insertRow();
+    g.className = 'group';
+    const gc = g.insertCell();
+    gc.colSpan = 4;
+    gc.textContent = title;
+    for (const [label, key, fmt] of rows) {
+      const tr = body.insertRow();
+      tr.insertCell().textContent = label;
+      const worst = tr.insertCell(), avg = tr.insertCell(), best = tr.insertCell();
+      avg.className = 'avg';
+      worst.textContent = avg.textContent = best.textContent = '–';
+      cells.push({ key, fmt, worst, avg, best });
+    }
+  }
+})();
+
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+function render() {
+  if (!results) return;
+  const pct = Math.min(49, Math.max(0, Number($('pct').value) || 0));
+  const tc = Math.max(0, Number($('treasureCandy').value) || 0);
+  const d = results.data;
+
+  for (const c of cells) {
+    let v;
+    if (c.key === 'treasureCandy') {
+      const t = stats(d[I.treasure], pct);
+      v = { worst: t.worst * tc, avg: t.avg * tc, best: t.best * tc };
+    } else {
+      v = stats(d[I[c.key]], pct);
+    }
+    setText(c.worst, c.fmt(v.worst));
+    setText(c.avg, c.fmt(v.avg));
+    setText(c.best, c.fmt(v.best));
+  }
+  setText($('info'),
+    `${results.candies.toLocaleString()} candies = ${Math.floor(results.candies / HIT_COST).toLocaleString()} paid attacks ` +
+    `(${results.runs.toLocaleString()} simulated runs; Worst/Best = ${pct}% / ${100 - pct}% percentile).`);
+}
+// "input" fires on every value change (not on blur); each field waits 100ms of quiet before updating.
+function debounced(fn, ms = 100) {
+  let t;
+  return () => { clearTimeout(t); t = setTimeout(fn, ms); };
+}
+$('candies').addEventListener('input', debounced(calculate));
+$('treasureCandy').addEventListener('input', debounced(render));
+$('pct').addEventListener('input', debounced(render));
+calculate();
+</script>
+</body>
+</html>
